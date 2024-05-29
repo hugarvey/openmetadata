@@ -795,8 +795,10 @@ public abstract class EntityRepository<T extends EntityInterface> {
   public final PutResponse<T> createOrUpdate(UriInfo uriInfo, T updated) {
     T original = findByNameOrNull(updated.getFullyQualifiedName(), ALL);
     if (original == null) { // If an original entity does not exist then create it, else update
+      T create = createNewEntity(updated);
+      storeChangeEvent(create, ENTITY_CREATED);
       return new PutResponse<>(
-          Status.CREATED, withHref(uriInfo, createNewEntity(updated)), ENTITY_CREATED);
+          Status.CREATED, withHref(uriInfo, create), ENTITY_CREATED);
     }
     return update(uriInfo, original, updated);
   }
@@ -855,6 +857,8 @@ public abstract class EntityRepository<T extends EntityInterface> {
     if (entityUpdater.fieldsChanged()) {
       change = EventType.ENTITY_UPDATED;
       setInheritedFields(original, patchFields); // Restore inherited fields after a change
+    } else {
+      storeChangeEvent(updated, ENTITY_NO_CHANGE);
     }
     return new PatchResponse<>(Status.OK, withHref(uriInfo, updated), change);
   }
@@ -919,6 +923,7 @@ public abstract class EntityRepository<T extends EntityInterface> {
             .withPreviousVersion(change.getPreviousVersion());
     entity.setChangeDescription(change);
     postUpdate(entity, entity);
+    storeChangeEvent(entity, ENTITY_UPDATED);
     return new PutResponse<>(Status.OK, changeEvent, ENTITY_FIELDS_CHANGED);
   }
 
@@ -1843,6 +1848,32 @@ public abstract class EntityRepository<T extends EntityInterface> {
     }
   }
 
+  @Transaction
+  protected void storeChangeEvent(T entity, EventType eventType) {
+    ChangeEvent changeEvent = getChangeEvent(entity, eventType);
+    daoCollection.changeEventDAO().insert(JsonUtils.pojoToJson(changeEvent));
+  }
+
+
+
+  private  ChangeEvent getChangeEvent(T entity, EventType eventType) {
+    return new ChangeEvent()
+        .withId(UUID.randomUUID())
+        .withEventType(eventType)
+        .withEntityId(entity.getId())
+        .withEntityType(entityType)
+        .withUserName(entity.getUpdatedBy())
+        .withTimestamp(entity.getUpdatedAt())
+        .withChangeDescription(entity.getChangeDescription())
+        .withCurrentVersion(entity.getVersion())
+        .withPreviousVersion(
+            entity.getChangeDescription() != null
+                ? entity.getChangeDescription().getPreviousVersion()
+                : entity.getVersion())
+        .withEntity(entity)
+        .withEntityFullyQualifiedName(entity.getFullyQualifiedName());
+  }
+
   protected BulkOperationResult bulkAssetsOperation(
       UUID entityId,
       String fromEntity,
@@ -2183,6 +2214,7 @@ public abstract class EntityRepository<T extends EntityInterface> {
     /** Compare original and updated entities and perform updates. Update the entity version and track changes. */
     @Transaction
     public final void update() {
+      processIncrementalEvents(original, updated, updated.getVersion());
       boolean consolidateChanges = consolidateChanges(original, updated, operation);
       // Revert the changes previously made by the user with in a session and consolidate all the
       // changes
@@ -2196,6 +2228,33 @@ public abstract class EntityRepository<T extends EntityInterface> {
       // Store the updated entity
       storeUpdate();
       postUpdate(original, updated);
+    }
+
+    private void processIncrementalEvents(
+        T actualOriginal, T actualUpdated, Double consolidatedVersion) {
+      // Build the Actual Change Taking Place , But don't store in Entity Versions
+      entityChanged = false;
+      original = actualOriginal;
+      updated = actualUpdated;
+
+      changeDescription = new ChangeDescription();
+      updateInternal();
+      boolean updateVersion = updateVersion(original.getVersion());
+      if (!updateVersion) {
+        if (entityChanged) {
+          if (updated.getVersion().equals(changeDescription.getPreviousVersion())) {
+            updated.setChangeDescription(original.getChangeDescription());
+          }
+        } else { // Update did not change the entity version
+          updated.setChangeDescription(original.getChangeDescription());
+          updated.setUpdatedBy(original.getUpdatedBy());
+          updated.setUpdatedAt(original.getUpdatedAt());
+        }
+      }
+
+      // Store the Actual Change Taking Place in Version
+      updated.setVersion(consolidatedVersion);
+      storeChangeEvent(updated, ENTITY_UPDATED);
     }
 
     @Transaction
