@@ -334,6 +334,9 @@ public interface CollectionDAO {
   @CreateSqlObject
   SuggestionDAO suggestionDAO();
 
+  @CreateSqlObject
+  OpenLineageEventDAO openLineageEventDAO();
+
   interface DashboardDAO extends EntityDAO<Dashboard> {
     @Override
     default String getTableName() {
@@ -4298,6 +4301,51 @@ public interface CollectionDAO {
     @SqlUpdate(value = "DELETE from user_tokens WHERE userid = :userid AND tokenType = :tokenType")
     void deleteTokenByUserAndType(
         @BindUUID("userid") UUID userid, @Bind("tokenType") String tokenType);
+  }
+
+  interface OpenLineageEventDAO {
+
+    default List<String> queryEvents(String runId, String eventType, Boolean unprocessed) {
+
+      StringBuilder conditions = new StringBuilder("1=1");
+      if (runId != null) {
+        conditions.append(String.format(" AND  runid='%s' ", runId));
+      }
+      if (eventType != null) {
+        conditions.append(String.format(" AND  eventtype='%s' ", eventType));
+      }
+      if (unprocessed != null && unprocessed) {
+        conditions.append(
+            String.format(" AND processed_at IS NULL AND eventtype='%s' ", eventType));
+      }
+
+      return queryEvents(conditions.toString());
+    }
+
+    @SqlQuery("SELECT json FROM openlineage_events WHERE <conditions>")
+    List<String> queryEvents(@Define("conditions") String conditions);
+
+    @ConnectionAwareSqlUpdate(
+        value = "INSERT INTO openlineage_events(json) VALUES (:json)",
+        connectionType = MYSQL)
+    @ConnectionAwareSqlUpdate(
+        value = "INSERT INTO openlineage_events(json) VALUES (:json :: jsonb)",
+        connectionType = POSTGRES)
+    void insert(@Bind("json") String json);
+
+    @SqlUpdate("DELETE FROM openlineage_events WHERE id = :id")
+    void deleteById(@BindUUID("id") UUID id);
+
+    @ConnectionAwareSqlUpdate(
+        value = "UPDATE openlineage_events SET processed_at = CURRENT_TIMESTAMP WHERE id = :id",
+        connectionType = MYSQL)
+    @ConnectionAwareSqlUpdate(
+        value = "UPDATE openlineage_events SET processed_at = now() WHERE id = :id",
+        connectionType = POSTGRES)
+    void markAsProcessed(@BindUUID("id") UUID eventId);
+
+    @SqlQuery("SELECT json FROM openlineage_events ")
+    List<String> listAll();
   }
 
   interface KpiDAO extends EntityDAO<Kpi> {
