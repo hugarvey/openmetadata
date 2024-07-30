@@ -6,6 +6,13 @@
   "javaInterfaces": ["org.openmetadata.schema.EntityInterface"],
   "description": "This schema defines the applications for Open-Metadata.",
   "type": "object",
+  "definitions": {
+    "appConfigSchema": {
+      "javaType": "org.openmetadata.schema.type.AppConfigSchema",
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
   "properties": {
     "id": {
       "description": "Unique identifier of this application.",
@@ -126,7 +133,7 @@
     "appScreenshots": {
       "description": "Application Screenshots.",
       "type": "array",
-      "items":{
+      "items": {
         "type": "string"
       },
       "uniqueItems": true
@@ -140,6 +147,10 @@
       "type": "boolean",
       "description": "Flag to enable/disable preview for the application. If the app is in preview mode, it can't be installed.",
       "default": false
+    },
+    "configSchema": {
+      "description": "Configuration Schema for the application.",
+      "$ref": "#/definitions/appConfigSchema"
     }
   },
   "additionalProperties": false,
