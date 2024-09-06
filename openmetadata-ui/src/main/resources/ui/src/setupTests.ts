@@ -1,3 +1,5 @@
+/* eslint-disable @typescript-eslint/no-unsafe-assignment */
+/* eslint-disable @typescript-eslint/no-unsafe-return */
 /*
  *  Copyright 2022 Collate.
  *  Licensed under the Apache License, Version 2.0 (the "License");
@@ -11,10 +13,10 @@
  *  limitations under the License.
  */
 
-// jest-dom adds custom jest matchers for asserting on DOM nodes.
-// allows you to do things like:
-// expect(element).toHaveTextContent(/react/i)
-// learn more: https://github.com/testing-library/jest-dom
+// Jest-dom adds custom jest matchers for asserting on DOM nodes.
+// Allows you to do things like:
+// Expect(element).toHaveTextContent(/react/i)
+// Learn more: https://github.com/testing-library/jest-dom
 import '@testing-library/jest-dom/extend-expect';
 
 // Reference: https://github.com/ant-design/ant-design/issues/21096
@@ -24,8 +26,8 @@ Object.defineProperty(window, 'matchMedia', {
     matches: false,
     media: query,
     onchange: null,
-    addListener: jest.fn(), // deprecated
-    removeListener: jest.fn(), // deprecated
+    addListener: jest.fn(), // Deprecated
+    removeListener: jest.fn(), // Deprecated
     addEventListener: jest.fn(),
     removeEventListener: jest.fn(),
     dispatchEvent: jest.fn(),
@@ -39,24 +41,17 @@ document.createRange = () => {
 
   range.getBoundingClientRect = jest.fn();
 
-  range.getClientRects = () => {
-    return {
-      item: () => null,
-      length: 0,
-      [Symbol.iterator]: jest.fn(),
-    };
-  };
+  range.getClientRects = () => ({
+    item: () => null,
+    length: 0,
+    [Symbol.iterator]: jest.fn(),
+  });
 
   return range;
 };
 
-window.DOMMatrixReadOnly = jest.fn().mockImplementation(() => ({
-  is2D: true,
-  isIdentity: true,
-}));
-
 /**
- * mock implementation of ResizeObserver
+ * Mock implementation of ResizeObserver
  */
 window.ResizeObserver = jest.fn().mockImplementation(() => ({
   observe: jest.fn(),
@@ -65,7 +60,7 @@ window.ResizeObserver = jest.fn().mockImplementation(() => ({
 }));
 
 /**
- * mock implementation of IntersectionObserver
+ * Mock implementation of IntersectionObserver
  */
 window.IntersectionObserver = jest.fn().mockImplementation(() => ({
   observe: jest.fn(),
@@ -74,7 +69,7 @@ window.IntersectionObserver = jest.fn().mockImplementation(() => ({
 }));
 
 /**
- * mock i18next
+ * Mock i18next
  */
 
 jest.mock('i18next', () => ({
@@ -84,20 +79,20 @@ jest.mock('i18next', () => ({
   t: jest.fn().mockImplementation((key) => key),
 }));
 
-jest.mock('utils/i18next/LocalUtil', () => ({
+jest.mock('./utils/i18next/LocalUtil', () => ({
   useTranslation: jest.fn().mockReturnValue({
-    t: (key) => key,
+    t: (key: string) => key,
   }),
-  t: (key) => key,
+  t: (key: string) => key,
   dir: jest.fn().mockReturnValue('ltr'),
 }));
 /**
- * mock react-i18next
+ * Mock react-i18next
  */
 jest.mock('react-i18next', () => ({
   ...jest.requireActual('react-i18next'),
   useTranslation: jest.fn().mockReturnValue({
-    t: (key) => key,
+    t: (key: string) => key,
     i18n: { language: 'en-US', dir: jest.fn().mockReturnValue('ltr') },
   }),
 }));
