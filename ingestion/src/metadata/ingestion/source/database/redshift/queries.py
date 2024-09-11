@@ -236,7 +236,7 @@ REDSHIFT_TEST_PARTITION_DETAILS = "select * from SVV_TABLE_INFO limit 1"
 # hence we are appending "create view <schema>.<table> as " to select query
 # to generate the column level lineage
 REDSHIFT_GET_ALL_RELATIONS = """
-  WITH view_defs AS (
+  (WITH view_defs AS (
       SELECT
           c.oid,
           pg_catalog.pg_get_viewdef(c.oid, true) AS view_definition,
@@ -280,8 +280,9 @@ REDSHIFT_GET_ALL_RELATIONS = """
             LEFT JOIN adjusted_view_defs avd ON avd.oid = c.oid
     WHERE c.relkind IN ('r', 'v', 'm', 'S', 'f')
         AND n.nspname !~ '^pg_' {schema_clause} {table_clause}
+        {limit_clause})
     UNION
-    SELECT
+    (SELECT
         'r' AS "relkind",
         s.esoid AS "schema_oid",
         s.schemaname AS "schema",
@@ -297,7 +298,8 @@ REDSHIFT_GET_ALL_RELATIONS = """
         JOIN svv_external_schemas s ON s.schemaname = t.schemaname
         JOIN pg_catalog.pg_user u ON u.usesysid = s.esowner
     where 1 {schema_clause} {table_clause}
-    ORDER BY "relkind", "schema_oid", "schema";
+    ORDER BY "relkind", "schema_oid", "schema"
+    {limit_clause});
     """
 
 
