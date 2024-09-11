@@ -61,7 +61,6 @@ import es.org.elasticsearch.common.settings.Settings;
 import es.org.elasticsearch.common.unit.Fuzziness;
 import es.org.elasticsearch.common.xcontent.LoggingDeprecationHandler;
 import es.org.elasticsearch.core.TimeValue;
-import es.org.elasticsearch.index.query.BoolQueryBuilder;
 import es.org.elasticsearch.index.query.MatchQueryBuilder;
 import es.org.elasticsearch.index.query.MultiMatchQueryBuilder;
 import es.org.elasticsearch.index.query.Operator;
@@ -167,6 +166,7 @@ import org.openmetadata.service.search.elasticsearch.dataInsightAggregators.Elas
 import org.openmetadata.service.search.elasticsearch.dataInsightAggregators.ElasticSearchMostViewedEntitiesAggregator;
 import org.openmetadata.service.search.elasticsearch.dataInsightAggregators.ElasticSearchPageViewsByEntitiesAggregator;
 import org.openmetadata.service.search.elasticsearch.dataInsightAggregators.ElasticSearchUnusedAssetsAggregator;
+import org.openmetadata.service.search.elasticsearch.queries.ElasticQueryBuilder;
 import org.openmetadata.service.search.indexes.ContainerIndex;
 import org.openmetadata.service.search.indexes.DashboardDataModelIndex;
 import org.openmetadata.service.search.indexes.DashboardIndex;
@@ -187,6 +187,9 @@ import org.openmetadata.service.search.indexes.TestCaseResultIndex;
 import org.openmetadata.service.search.indexes.TopicIndex;
 import org.openmetadata.service.search.indexes.UserIndex;
 import org.openmetadata.service.search.models.IndexMapping;
+import org.openmetadata.service.search.queries.OMQueryBuilder;
+import org.openmetadata.service.search.security.RBACConditionEvaluator;
+import org.openmetadata.service.security.policyevaluator.SubjectContext;
 import org.openmetadata.service.util.FullyQualifiedName;
 import org.openmetadata.service.util.JsonUtils;
 import org.openmetadata.service.workflows.searchIndex.ReindexingUtil;
@@ -197,6 +200,8 @@ public class ElasticSearchClient implements SearchClient {
 
   @SuppressWarnings("deprecated")
   protected final RestHighLevelClient client;
+
+  private final RBACConditionEvaluator rbacConditionEvaluator;
 
   private final boolean isClientAvailable;
   public static final NamedXContentRegistry xContentRegistry;
@@ -224,6 +229,7 @@ public class ElasticSearchClient implements SearchClient {
     client = createElasticSearchClient(config);
     clusterAlias = config != null ? config.getClusterAlias() : "";
     isClientAvailable = client != null;
+    rbacConditionEvaluator = new RBACConditionEvaluator();
   }
 
   @Override
@@ -324,7 +330,7 @@ public class ElasticSearchClient implements SearchClient {
   }
 
   @Override
-  public Response search(SearchRequest request) throws IOException {
+  public Response search(SearchRequest request, SubjectContext subjectContext) throws IOException {
     SearchSourceBuilder searchSourceBuilder =
         getSearchSourceBuilder(
             request.getIndex(), request.getQuery(), request.getFrom(), request.getSize());
@@ -353,8 +359,9 @@ public class ElasticSearchClient implements SearchClient {
                 .xContent()
                 .createParser(
                     xContentRegistry, LoggingDeprecationHandler.INSTANCE, request.getQueryFilter());
-        QueryBuilder filter = SearchSourceBuilder.fromXContent(filterParser).query();
-        BoolQueryBuilder newQuery =
+        es.org.elasticsearch.index.query.QueryBuilder filter =
+            SearchSourceBuilder.fromXContent(filterParser).query();
+        es.org.elasticsearch.index.query.BoolQueryBuilder newQuery =
             QueryBuilders.boolQuery().must(searchSourceBuilder.query()).filter(filter);
         searchSourceBuilder.query(newQuery);
       } catch (Exception ex) {
@@ -369,7 +376,8 @@ public class ElasticSearchClient implements SearchClient {
                 .xContent()
                 .createParser(
                     xContentRegistry, LoggingDeprecationHandler.INSTANCE, request.getPostFilter());
-        QueryBuilder filter = SearchSourceBuilder.fromXContent(filterParser).query();
+        es.org.elasticsearch.index.query.QueryBuilder filter =
+            SearchSourceBuilder.fromXContent(filterParser).query();
         searchSourceBuilder.postFilter(filter);
       } catch (Exception ex) {
         LOG.warn("Error parsing post_filter from query parameters, ignoring filter", ex);
@@ -383,7 +391,8 @@ public class ElasticSearchClient implements SearchClient {
         || request
             .getIndex()
             .equalsIgnoreCase(Entity.getSearchRepository().getIndexOrAliasName("dataAsset"))) {
-      BoolQueryBuilder boolQueryBuilder = QueryBuilders.boolQuery();
+      es.org.elasticsearch.index.query.BoolQueryBuilder boolQueryBuilder =
+          QueryBuilders.boolQuery();
       boolQueryBuilder.should(
           QueryBuilders.boolQuery()
               .must(searchSourceBuilder.query())
@@ -455,7 +464,7 @@ public class ElasticSearchClient implements SearchClient {
         /*
         Search for user input terms in name, fullyQualifiedName, displayName and glossary.fullyQualifiedName, glossary.displayName
         */
-        QueryBuilder baseQuery =
+        es.org.elasticsearch.index.query.QueryBuilder baseQuery =
             QueryBuilders.boolQuery()
                 .should(searchSourceBuilder.query())
                 .should(QueryBuilders.matchPhraseQuery("fullyQualifiedName", request.getQuery()))
@@ -476,7 +485,8 @@ public class ElasticSearchClient implements SearchClient {
                 RequestOptions.DEFAULT);
 
         // Extract parent terms from aggregation
-        BoolQueryBuilder parentTermQueryBuilder = QueryBuilders.boolQuery();
+        es.org.elasticsearch.index.query.BoolQueryBuilder parentTermQueryBuilder =
+            QueryBuilders.boolQuery();
         Terms parentTerms = searchResponse.getAggregations().get("fqnParts_agg");
 
         // Build  es query to get parent terms for the user input query , to build correct hierarchy
@@ -515,6 +525,18 @@ public class ElasticSearchClient implements SearchClient {
     }
 
     searchSourceBuilder.timeout(new TimeValue(30, TimeUnit.SECONDS));
+    if (subjectContext != null && !subjectContext.isAdmin()) {
+      // Evaluate RBAC conditions
+      OMQueryBuilder rbacQuery =
+          rbacConditionEvaluator.evaluateConditions(subjectContext, new ElasticQueryBuilder());
+      if (rbacQuery != null) {
+        searchSourceBuilder.query(
+            QueryBuilders.boolQuery()
+                .must(searchSourceBuilder.query())
+                .filter((QueryBuilder) rbacQuery.build()));
+      }
+    }
+
     try {
 
       SearchResponse searchResponse =
@@ -646,10 +668,11 @@ public class ElasticSearchClient implements SearchClient {
       try {
         XContentParser queryParser = createXContentParser(filter);
         XContentParser sourceParser = createXContentParser(filter);
-        QueryBuilder queryFromXContent = SearchSourceBuilder.fromXContent(queryParser).query();
+        es.org.elasticsearch.index.query.QueryBuilder queryFromXContent =
+            SearchSourceBuilder.fromXContent(queryParser).query();
         FetchSourceContext sourceFromXContent =
             SearchSourceBuilder.fromXContent(sourceParser).fetchSource();
-        BoolQueryBuilder boolQuery = QueryBuilders.boolQuery();
+        es.org.elasticsearch.index.query.BoolQueryBuilder boolQuery = QueryBuilders.boolQuery();
         boolQuery =
             nullOrEmpty(q)
                 ? boolQuery.filter(queryFromXContent)
@@ -787,8 +810,9 @@ public class ElasticSearchClient implements SearchClient {
             XContentType.JSON
                 .xContent()
                 .createParser(xContentRegistry, LoggingDeprecationHandler.INSTANCE, queryFilter);
-        QueryBuilder filter = SearchSourceBuilder.fromXContent(filterParser).query();
-        BoolQueryBuilder newQuery =
+        es.org.elasticsearch.index.query.QueryBuilder filter =
+            SearchSourceBuilder.fromXContent(filterParser).query();
+        es.org.elasticsearch.index.query.BoolQueryBuilder newQuery =
             QueryBuilders.boolQuery().must(searchSourceBuilder.query()).filter(filter);
         searchSourceBuilder.query(newQuery);
       } catch (Exception ex) {
@@ -836,7 +860,7 @@ public class ElasticSearchClient implements SearchClient {
     es.org.elasticsearch.action.search.SearchRequest searchRequest =
         new es.org.elasticsearch.action.search.SearchRequest(
             Entity.getSearchRepository().getIndexOrAliasName(GLOBAL_SEARCH_ALIAS));
-    BoolQueryBuilder boolQueryBuilder = QueryBuilders.boolQuery();
+    es.org.elasticsearch.index.query.BoolQueryBuilder boolQueryBuilder = QueryBuilders.boolQuery();
     boolQueryBuilder.should(
         QueryBuilders.boolQuery()
             .must(QueryBuilders.termQuery("lineage.pipeline.fullyQualifiedName.keyword", fqn)));
@@ -854,8 +878,9 @@ public class ElasticSearchClient implements SearchClient {
             XContentType.JSON
                 .xContent()
                 .createParser(xContentRegistry, LoggingDeprecationHandler.INSTANCE, queryFilter);
-        QueryBuilder filter = SearchSourceBuilder.fromXContent(filterParser).query();
-        BoolQueryBuilder newQuery =
+        es.org.elasticsearch.index.query.QueryBuilder filter =
+            SearchSourceBuilder.fromXContent(filterParser).query();
+        es.org.elasticsearch.index.query.BoolQueryBuilder newQuery =
             QueryBuilders.boolQuery().must(searchSourceBuilder.query()).filter(filter);
         searchSourceBuilder.query(newQuery);
       } catch (Exception ex) {
@@ -956,9 +981,11 @@ public class ElasticSearchClient implements SearchClient {
         XContentType.JSON
             .xContent()
             .createParser(xContentRegistry, LoggingDeprecationHandler.INSTANCE, query);
-    QueryBuilder filter = SearchSourceBuilder.fromXContent(filterParser).query();
+    es.org.elasticsearch.index.query.QueryBuilder filter =
+        SearchSourceBuilder.fromXContent(filterParser).query();
 
-    BoolQueryBuilder boolQueryBuilder = QueryBuilders.boolQuery().must(filter);
+    es.org.elasticsearch.index.query.BoolQueryBuilder boolQueryBuilder =
+        QueryBuilders.boolQuery().must(filter);
     searchSourceBuilder
         .aggregation(
             AggregationBuilders.terms(fieldName)
@@ -1061,8 +1088,10 @@ public class ElasticSearchClient implements SearchClient {
           XContentType.JSON
               .xContent()
               .createParser(xContentRegistry, LoggingDeprecationHandler.INSTANCE, query);
-      QueryBuilder parsedQuery = SearchSourceBuilder.fromXContent(queryParser).query();
-      BoolQueryBuilder boolQueryBuilder = QueryBuilders.boolQuery().must(parsedQuery);
+      es.org.elasticsearch.index.query.QueryBuilder parsedQuery =
+          SearchSourceBuilder.fromXContent(queryParser).query();
+      es.org.elasticsearch.index.query.BoolQueryBuilder boolQueryBuilder =
+          QueryBuilders.boolQuery().must(parsedQuery);
       searchSourceBuilder.query(boolQueryBuilder);
     }
     searchSourceBuilder.size(0).timeout(new TimeValue(30, TimeUnit.SECONDS));
@@ -1099,8 +1128,10 @@ public class ElasticSearchClient implements SearchClient {
           XContentType.JSON
               .xContent()
               .createParser(xContentRegistry, LoggingDeprecationHandler.INSTANCE, query);
-      QueryBuilder parsedQuery = SearchSourceBuilder.fromXContent(queryParser).query();
-      BoolQueryBuilder boolQueryBuilder = QueryBuilders.boolQuery().must(parsedQuery);
+      es.org.elasticsearch.index.query.QueryBuilder parsedQuery =
+          SearchSourceBuilder.fromXContent(queryParser).query();
+      es.org.elasticsearch.index.query.BoolQueryBuilder boolQueryBuilder =
+          QueryBuilders.boolQuery().must(parsedQuery);
       searchSourceBuilder.query(boolQueryBuilder);
     }
 
@@ -1540,7 +1571,10 @@ public class ElasticSearchClient implements SearchClient {
   }
 
   private static SearchSourceBuilder searchBuilder(
-      QueryBuilder queryBuilder, HighlightBuilder hb, int from, int size) {
+      es.org.elasticsearch.index.query.QueryBuilder queryBuilder,
+      HighlightBuilder hb,
+      int from,
+      int size) {
     SearchSourceBuilder builder =
         new SearchSourceBuilder().query(queryBuilder).from(from).size(size);
     if (hb != null) {
@@ -1601,7 +1635,8 @@ public class ElasticSearchClient implements SearchClient {
   public void deleteEntityByFields(
       List<String> indexName, List<Pair<String, String>> fieldAndValue) {
     if (isClientAvailable) {
-      BoolQueryBuilder queryBuilder = new BoolQueryBuilder();
+      es.org.elasticsearch.index.query.BoolQueryBuilder queryBuilder =
+          new es.org.elasticsearch.index.query.BoolQueryBuilder();
       DeleteByQueryRequest deleteByQueryRequest =
           new DeleteByQueryRequest(indexName.toArray(new String[0]));
       for (Pair<String, String> p : fieldAndValue) {
@@ -1629,7 +1664,8 @@ public class ElasticSearchClient implements SearchClient {
     if (isClientAvailable) {
       UpdateByQueryRequest updateByQueryRequest =
           new UpdateByQueryRequest(indexName.toArray(new String[0]));
-      BoolQueryBuilder queryBuilder = new BoolQueryBuilder();
+      es.org.elasticsearch.index.query.BoolQueryBuilder queryBuilder =
+          new es.org.elasticsearch.index.query.BoolQueryBuilder();
       for (Pair<String, String> p : fieldAndValue) {
         queryBuilder.must(new TermQueryBuilder(p.getKey(), p.getValue()));
       }
@@ -1928,14 +1964,15 @@ public class ElasticSearchClient implements SearchClient {
       String dataInsightChartName) {
 
     SearchSourceBuilder searchSourceBuilder = new SearchSourceBuilder();
-    BoolQueryBuilder searchQueryFiler = new BoolQueryBuilder();
+    es.org.elasticsearch.index.query.BoolQueryBuilder searchQueryFiler =
+        new es.org.elasticsearch.index.query.BoolQueryBuilder();
 
     // Add team filter
     if (team != null
         && DataInsightChartRepository.SUPPORTS_TEAM_FILTER.contains(dataInsightChartName)) {
       List<String> teamArray = Arrays.asList(team.split("\\s*,\\s*"));
 
-      BoolQueryBuilder teamQueryFilter = QueryBuilders.boolQuery();
+      es.org.elasticsearch.index.query.BoolQueryBuilder teamQueryFilter = QueryBuilders.boolQuery();
       teamQueryFilter.should(
           QueryBuilders.termsQuery(DataInsightChartRepository.DATA_TEAM, teamArray));
       searchQueryFiler.must(teamQueryFilter);
@@ -1946,7 +1983,7 @@ public class ElasticSearchClient implements SearchClient {
         && DataInsightChartRepository.SUPPORTS_TIER_FILTER.contains(dataInsightChartName)) {
       List<String> tierArray = Arrays.asList(tier.split("\\s*,\\s*"));
 
-      BoolQueryBuilder tierQueryFilter = QueryBuilders.boolQuery();
+      es.org.elasticsearch.index.query.BoolQueryBuilder tierQueryFilter = QueryBuilders.boolQuery();
       tierQueryFilter.should(
           QueryBuilders.termsQuery(DataInsightChartRepository.DATA_ENTITY_TIER, tierArray));
       searchQueryFiler.must(tierQueryFilter);
@@ -1972,8 +2009,9 @@ public class ElasticSearchClient implements SearchClient {
             XContentType.JSON
                 .xContent()
                 .createParser(xContentRegistry, LoggingDeprecationHandler.INSTANCE, queryFilter);
-        QueryBuilder filter = SearchSourceBuilder.fromXContent(filterParser).query();
-        BoolQueryBuilder newQuery =
+        es.org.elasticsearch.index.query.QueryBuilder filter =
+            SearchSourceBuilder.fromXContent(filterParser).query();
+        es.org.elasticsearch.index.query.BoolQueryBuilder newQuery =
             QueryBuilders.boolQuery().must(searchSourceBuilder.query()).filter(filter);
         searchSourceBuilder.query(newQuery);
       } catch (Exception ex) {
